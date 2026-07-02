@@ -38,6 +38,8 @@ export const subscriptions = pgTable("subscriptions", {
 export type Subscription = typeof subscriptions.$inferSelect;
 export type NewSubscription = typeof subscriptions.$inferInsert;
 
+export const planTierEnum = pgEnum("plan_tier", ["indie", "studio", "pro"]);
+
 export const games = pgTable("games", {
   id: serial("id").primaryKey(),
   userId: integer("userId").notNull(),
@@ -46,8 +48,9 @@ export const games = pgTable("games", {
   description: text("description"),
   platform: varchar("platform", { length: 100 }),
   sdkApiKey: varchar("sdkApiKey", { length: 255 }).notNull(),
-  isActive: boolean("isActive").default(true).notNull(),
-  thumbnailUrl: text("thumbnailUrl"),
+  planTier: planTierEnum("planTier").notNull().default("indie"),
+  isActive: boolean("isActive").notNull().default(true),
+  sessionRetentionDays: integer("sessionRetentionDays").notNull().default(30),
   createdAt: timestamp("createdAt").defaultNow().notNull(),
   updatedAt: timestamp("updatedAt").defaultNow().notNull(),
 });
@@ -59,8 +62,9 @@ export const gameLevels = pgTable("game_levels", {
   id: serial("id").primaryKey(),
   gameId: integer("gameId").notNull(),
   name: varchar("name", { length: 255 }).notNull(),
-  levelIndex: integer("levelIndex").notNull(),
+  levelKey: varchar("levelKey", { length: 255 }).notNull(),
   description: text("description"),
+  ordinalPosition: integer("ordinalPosition").notNull().default(0),
   createdAt: timestamp("createdAt").defaultNow().notNull(),
 });
 
@@ -72,127 +76,161 @@ export const sessionStatusEnum = pgEnum("session_status", [
   "completed",
   "quit",
   "crashed",
-  "idle_timeout",
-]);
-
-export const quitReasonEnum = pgEnum("quit_reason", [
-  "manual_quit",
-  "idle_timeout",
-  "crash",
-  "level_frustration",
-  "repeated_failure",
-  "unknown",
+  "timeout",
 ]);
 
 export const gameSessions = pgTable("game_sessions", {
   id: serial("id").primaryKey(),
   gameId: integer("gameId").notNull(),
-  playerIdentifier: varchar("playerIdentifier", { length: 255 }).notNull(),
-  status: sessionStatusEnum("status").default("active").notNull(),
-  quitReason: quitReasonEnum("quitReason"),
-  quitLevelId: integer("quitLevelId"),
-  sessionStartedAt: timestamp("sessionStartedAt").notNull(),
-  sessionEndedAt: timestamp("sessionEndedAt"),
-  durationSeconds: integer("durationSeconds"),
-  deviceInfo: text("deviceInfo"),
-  platformVersion: varchar("platformVersion", { length: 100 }),
+  externalPlayerId: varchar("externalPlayerId", { length: 255 }).notNull(),
+  sessionToken: varchar("sessionToken", { length: 255 }).notNull(),
+  status: sessionStatusEnum("status").notNull().default("active"),
+  platformInfo: text("platformInfo"),
   gameVersion: varchar("gameVersion", { length: 100 }),
-  rawMetadata: text("rawMetadata"),
-  llmQuitSummary: text("llmQuitSummary"),
+  startedAt: timestamp("startedAt").notNull(),
+  endedAt: timestamp("endedAt"),
+  durationSeconds: integer("durationSeconds"),
+  lastActiveLevelId: integer("lastActiveLevelId"),
+  quitReason: text("quitReason"),
+  quitReasonSummary: text("quitReasonSummary"),
+  replayS3Key: varchar("replayS3Key", { length: 512 }),
+  replayProcessed: boolean("replayProcessed").notNull().default(false),
   createdAt: timestamp("createdAt").defaultNow().notNull(),
 });
 
 export type GameSession = typeof gameSessions.$inferSelect;
 export type NewGameSession = typeof gameSessions.$inferInsert;
 
+export const sessionEventTypeEnum = pgEnum("session_event_type", [
+  "level_start",
+  "level_complete",
+  "level_quit",
+  "death",
+  "pause",
+  "resume",
+  "checkpoint",
+  "menu_open",
+  "menu_close",
+  "custom",
+]);
+
 export const sessionEvents = pgTable("session_events", {
   id: serial("id").primaryKey(),
   sessionId: integer("sessionId").notNull(),
   gameId: integer("gameId").notNull(),
   levelId: integer("levelId"),
-  eventType: varchar("eventType", { length: 100 }).notNull(),
-  eventName: varchar("eventName", { length: 255 }).notNull(),
+  eventType: sessionEventTypeEnum("eventType").notNull(),
+  eventKey: varchar("eventKey", { length: 255 }),
   payload: text("payload"),
-  positionX: numeric("positionX", { precision: 10, scale: 4 }),
-  positionY: numeric("positionY", { precision: 10, scale: 4 }),
-  positionZ: numeric("positionZ", { precision: 10, scale: 4 }),
+  positionX: numeric("positionX", { precision: 12, scale: 4 }),
+  positionY: numeric("positionY", { precision: 12, scale: 4 }),
+  positionZ: numeric("positionZ", { precision: 12, scale: 4 }),
   occurredAt: timestamp("occurredAt").notNull(),
-  sequenceIndex: integer("sequenceIndex").notNull(),
+  sessionOffsetMs: integer("sessionOffsetMs").notNull().default(0),
   createdAt: timestamp("createdAt").defaultNow().notNull(),
 });
 
 export type SessionEvent = typeof sessionEvents.$inferSelect;
 export type NewSessionEvent = typeof sessionEvents.$inferInsert;
 
-export const sessionReplays = pgTable("session_replays", {
+export const dropOffEvents = pgTable("drop_off_events", {
   id: serial("id").primaryKey(),
   sessionId: integer("sessionId").notNull(),
   gameId: integer("gameId").notNull(),
-  s3Key: text("s3Key").notNull(),
-  s3Bucket: varchar("s3Bucket", { length: 255 }).notNull(),
-  fileSizeBytes: integer("fileSizeBytes"),
-  durationSeconds: integer("durationSeconds"),
-  replayFormat: varchar("replayFormat", { length: 50 }).default("jsonl").notNull(),
-  isProcessed: boolean("isProcessed").default(false).notNull(),
+  levelId: integer("levelId"),
+  externalPlayerId: varchar("externalPlayerId", { length: 255 }).notNull(),
+  dropOffTriggerEventId: integer("dropOffTriggerEventId"),
+  sessionDurationSeconds: integer("sessionDurationSeconds"),
+  deathCountBeforeQuit: integer("deathCountBeforeQuit").notNull().default(0),
+  pauseCountBeforeQuit: integer("pauseCountBeforeQuit").notNull().default(0),
+  lastPositionX: numeric("lastPositionX", { precision: 12, scale: 4 }),
+  lastPositionY: numeric("lastPositionY", { precision: 12, scale: 4 }),
+  lastPositionZ: numeric("lastPositionZ", { precision: 12, scale: 4 }),
+  rawQuitContext: text("rawQuitContext"),
+  llmAnalyzed: boolean("llmAnalyzed").notNull().default(false),
+  llmQuitCategory: varchar("llmQuitCategory", { length: 100 }),
+  llmSummary: text("llmSummary"),
+  llmConfidenceScore: numeric("llmConfidenceScore", { precision: 4, scale: 3 }),
+  occurredAt: timestamp("occurredAt").notNull(),
   createdAt: timestamp("createdAt").defaultNow().notNull(),
 });
 
-export type SessionReplay = typeof sessionReplays.$inferSelect;
-export type NewSessionReplay = typeof sessionReplays.$inferInsert;
+export type DropOffEvent = typeof dropOffEvents.$inferSelect;
+export type NewDropOffEvent = typeof dropOffEvents.$inferInsert;
 
-export const dropOffHeatmapEntries = pgTable("drop_off_heatmap_entries", {
+export const heatmapSnapshots = pgTable("heatmap_snapshots", {
   id: serial("id").primaryKey(),
   gameId: integer("gameId").notNull(),
   levelId: integer("levelId").notNull(),
-  bucketKey: varchar("bucketKey", { length: 100 }).notNull(),
-  positionX: numeric("positionX", { precision: 10, scale: 4 }).notNull(),
-  positionY: numeric("positionY", { precision: 10, scale: 4 }).notNull(),
-  positionZ: numeric("positionZ", { precision: 10, scale: 4 }),
-  quitCount: integer("quitCount").default(0).notNull(),
-  totalSessionsReached: integer("totalSessionsReached").default(0).notNull(),
+  snapshotDate: timestamp("snapshotDate").notNull(),
+  totalSessions: integer("totalSessions").notNull().default(0),
+  totalDropOffs: integer("totalDropOffs").notNull().default(0),
   dropOffRate: numeric("dropOffRate", { precision: 5, scale: 4 }),
-  periodStart: timestamp("periodStart").notNull(),
-  periodEnd: timestamp("periodEnd").notNull(),
+  heatmapData: text("heatmapData").notNull(),
   createdAt: timestamp("createdAt").defaultNow().notNull(),
-  updatedAt: timestamp("updatedAt").defaultNow().notNull(),
 });
 
-export type DropOffHeatmapEntry = typeof dropOffHeatmapEntries.$inferSelect;
-export type NewDropOffHeatmapEntry = typeof dropOffHeatmapEntries.$inferInsert;
+export type HeatmapSnapshot = typeof heatmapSnapshots.$inferSelect;
+export type NewHeatmapSnapshot = typeof heatmapSnapshots.$inferInsert;
 
-export const quitInsightReports = pgTable("quit_insight_reports", {
+export const insightStatusEnum = pgEnum("insight_status", [
+  "pending",
+  "processing",
+  "ready",
+  "failed",
+]);
+
+export const insights = pgTable("insights", {
   id: serial("id").primaryKey(),
   gameId: integer("gameId").notNull(),
   levelId: integer("levelId"),
-  reportPeriodStart: timestamp("reportPeriodStart").notNull(),
-  reportPeriodEnd: timestamp("reportPeriodEnd").notNull(),
-  totalSessions: integer("totalSessions").default(0).notNull(),
-  totalQuits: integer("totalQuits").default(0).notNull(),
-  averageSessionDurationSeconds: integer("averageSessionDurationSeconds"),
-  topQuitReason: quitReasonEnum("topQuitReason"),
-  llmInsightSummary: text("llmInsightSummary"),
-  llmActionableRecommendations: text("llmActionableRecommendations"),
-  llmGeneratedAt: timestamp("llmGeneratedAt"),
-  isPublished: boolean("isPublished").default(false).notNull(),
+  userId: integer("userId").notNull(),
+  title: varchar("title", { length: 255 }).notNull(),
+  summary: text("summary").notNull(),
+  detailedAnalysis: text("detailedAnalysis"),
+  quitCategory: varchar("quitCategory", { length: 100 }),
+  affectedSessionCount: integer("affectedSessionCount").notNull().default(0),
+  dropOffRatePercent: numeric("dropOffRatePercent", { precision: 5, scale: 2 }),
+  status: insightStatusEnum("status").notNull().default("pending"),
+  analyzedFrom: timestamp("analyzedFrom"),
+  analyzedTo: timestamp("analyzedTo"),
+  llmModel: varchar("llmModel", { length: 100 }),
+  llmPromptTokens: integer("llmPromptTokens"),
+  llmCompletionTokens: integer("llmCompletionTokens"),
   createdAt: timestamp("createdAt").defaultNow().notNull(),
   updatedAt: timestamp("updatedAt").defaultNow().notNull(),
 });
 
-export type QuitInsightReport = typeof quitInsightReports.$inferSelect;
-export type NewQuitInsightReport = typeof quitInsightReports.$inferInsert;
+export type Insight = typeof insights.$inferSelect;
+export type NewInsight = typeof insights.$inferInsert;
+
+export const insightRecommendations = pgTable("insight_recommendations", {
+  id: serial("id").primaryKey(),
+  insightId: integer("insightId").notNull(),
+  gameId: integer("gameId").notNull(),
+  recommendation: text("recommendation").notNull(),
+  priority: varchar("priority", { length: 50 }).notNull().default("medium"),
+  isActionable: boolean("isActionable").notNull().default(true),
+  isDismissed: boolean("isDismissed").notNull().default(false),
+  dismissedAt: timestamp("dismissedAt"),
+  createdAt: timestamp("createdAt").defaultNow().notNull(),
+});
+
+export type InsightRecommendation = typeof insightRecommendations.$inferSelect;
+export type NewInsightRecommendation = typeof insightRecommendations.$inferInsert;
 
 export const playerProfiles = pgTable("player_profiles", {
   id: serial("id").primaryKey(),
   gameId: integer("gameId").notNull(),
-  playerIdentifier: varchar("playerIdentifier", { length: 255 }).notNull(),
+  externalPlayerId: varchar("externalPlayerId", { length: 255 }).notNull(),
+  totalSessions: integer("totalSessions").notNull().default(0),
+  totalPlaytimeSeconds: integer("totalPlaytimeSeconds").notNull().default(0),
+  totalDeaths: integer("totalDeaths").notNull().default(0),
+  totalQuits: integer("totalQuits").notNull().default(0),
+  levelsCompleted: integer("levelsCompleted").notNull().default(0),
+  furthestLevelId: integer("furthestLevelId"),
   firstSeenAt: timestamp("firstSeenAt").notNull(),
   lastSeenAt: timestamp("lastSeenAt").notNull(),
-  totalSessions: integer("totalSessions").default(0).notNull(),
-  totalPlaytimeSeconds: integer("totalPlaytimeSeconds").default(0).notNull(),
-  totalQuits: integer("totalQuits").default(0).notNull(),
-  furthestLevelReached: integer("furthestLevelReached").default(0).notNull(),
-  churnRiskScore: numeric("churnRiskScore", { precision: 5, scale: 4 }),
-  tags: text("tags"),
   createdAt: timestamp("createdAt").defaultNow().notNull(),
   updatedAt: timestamp("updatedAt").defaultNow().notNull(),
 });
@@ -200,18 +238,20 @@ export const playerProfiles = pgTable("player_profiles", {
 export type PlayerProfile = typeof playerProfiles.$inferSelect;
 export type NewPlayerProfile = typeof playerProfiles.$inferInsert;
 
-export const sdkWebhookLogs = pgTable("sdk_webhook_logs", {
+export const dailyGameMetrics = pgTable("daily_game_metrics", {
   id: serial("id").primaryKey(),
   gameId: integer("gameId").notNull(),
-  sdkApiKey: varchar("sdkApiKey", { length: 255 }).notNull(),
-  eventType: varchar("eventType", { length: 100 }).notNull(),
-  payloadHash: varchar("payloadHash", { length: 64 }),
-  rawBody: text("rawBody"),
-  processingStatus: varchar("processingStatus", { length: 50 }).default("pending").notNull(),
-  processingError: text("processingError"),
-  processedAt: timestamp("processedAt"),
+  metricDate: timestamp("metricDate").notNull(),
+  totalSessions: integer("totalSessions").notNull().default(0),
+  uniquePlayers: integer("uniquePlayers").notNull().default(0),
+  avgSessionDurationSeconds: integer("avgSessionDurationSeconds").notNull().default(0),
+  totalQuits: integer("totalQuits").notNull().default(0),
+  totalCrashes: integer("totalCrashes").notNull().default(0),
+  totalCompletions: integer("totalCompletions").notNull().default(0),
+  quitRate: numeric("quitRate", { precision: 5, scale: 4 }),
+  completionRate: numeric("completionRate", { precision: 5, scale: 4 }),
   createdAt: timestamp("createdAt").defaultNow().notNull(),
 });
 
-export type SdkWebhookLog = typeof sdkWebhookLogs.$inferSelect;
-export type NewSdkWebhookLog = typeof sdkWebhookLogs.$inferInsert;
+export type DailyGameMetric = typeof dailyGameMetrics.$inferSelect;
+export type NewDailyGameMetric = typeof dailyGameMetrics.$inferInsert;

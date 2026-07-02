@@ -15,17 +15,18 @@ import { useState } from "react";
 import {
   Gamepad2,
   Users,
-  TrendingDown,
-  Clock,
+  TrendingUp,
+  AlertTriangle,
   Plus,
-  AlertCircle,
-  BarChart3,
-  Zap,
-  Eye,
-  ChevronRight,
   Activity,
-  Target,
+  BarChart3,
+  Clock,
+  Zap,
+  ChevronRight,
+  Eye,
+  Brain,
 } from "lucide-react";
+import { Link } from "wouter";
 
 function StatCardSkeleton() {
   return (
@@ -44,14 +45,16 @@ function StatCardSkeleton() {
 function GameCardSkeleton() {
   return (
     <Card>
-      <CardHeader>
-        <Skeleton className="h-5 w-40 mb-2" />
-        <Skeleton className="h-4 w-full" />
+      <CardHeader className="pb-2">
+        <Skeleton className="h-5 w-40 mb-1" />
+        <Skeleton className="h-3 w-24" />
       </CardHeader>
-      <CardContent>
-        <div className="flex gap-2">
-          <Skeleton className="h-6 w-16" />
-          <Skeleton className="h-6 w-20" />
+      <CardContent className="space-y-3">
+        <Skeleton className="h-4 w-full" />
+        <Skeleton className="h-4 w-3/4" />
+        <div className="flex gap-2 pt-2">
+          <Skeleton className="h-8 w-20" />
+          <Skeleton className="h-8 w-20" />
         </div>
       </CardContent>
     </Card>
@@ -61,6 +64,12 @@ function GameCardSkeleton() {
 export default function Dashboard() {
   const { user, loading } = useAuth();
 
+  const [createGameOpen, setCreateGameOpen] = useState(false);
+  const [gameName, setGameName] = useState("");
+  const [gameDescription, setGameDescription] = useState("");
+  const [gamePlatform, setGamePlatform] = useState("");
+  const [createError, setCreateError] = useState<string | null>(null);
+
   const {
     data: games,
     isLoading: gamesLoading,
@@ -68,39 +77,38 @@ export default function Dashboard() {
   } = trpc.games.list.useQuery(undefined, { enabled: !!user });
 
   const {
-    data: stats,
-    isLoading: statsLoading,
-    error: statsError,
-  } = trpc.games.dashboardStats.useQuery(undefined, { enabled: !!user });
+    data: overviewMetrics,
+    isLoading: metricsLoading,
+  } = trpc.games.overviewMetrics.useQuery(undefined, { enabled: !!user });
 
   const {
-    data: recentReports,
-    isLoading: reportsLoading,
-  } = trpc.games.recentReports.useQuery(undefined, { enabled: !!user });
+    data: recentInsights,
+    isLoading: insightsLoading,
+  } = trpc.games.recentInsights.useQuery(undefined, { enabled: !!user });
+
+  const utils = trpc.useUtils();
 
   const createGameMutation = trpc.games.create.useMutation({
     onSuccess: () => {
-      trpc.useUtils().games.list.invalidate();
-      trpc.useUtils().games.dashboardStats.invalidate();
-      setCreateOpen(false);
+      utils.games.list.invalidate();
+      utils.games.overviewMetrics.invalidate();
+      setCreateGameOpen(false);
       setGameName("");
       setGameDescription("");
       setGamePlatform("");
+      setCreateError(null);
+    },
+    onError: (err) => {
+      setCreateError(err.message || "Failed to create game. Please try again.");
     },
   });
 
-  const [createOpen, setCreateOpen] = useState(false);
-  const [gameName, setGameName] = useState("");
-  const [gameDescription, setGameDescription] = useState("");
-  const [gamePlatform, setGamePlatform] = useState("");
-  const [formError, setFormError] = useState("");
-
   function handleCreateGame() {
-    setFormError("");
     if (!gameName.trim()) {
-      setFormError("Game name is required.");
+      setCreateError("Game name is required.");
       return;
     }
+    setCreateError(null);
     createGameMutation.mutate({
       name: gameName.trim(),
       description: gameDescription.trim() || undefined,
@@ -108,13 +116,26 @@ export default function Dashboard() {
     });
   }
 
-  const platformColors: Record<string, string> = {
-    ios: "bg-blue-100 text-blue-700",
-    android: "bg-green-100 text-green-700",
-    pc: "bg-purple-100 text-purple-700",
-    web: "bg-orange-100 text-orange-700",
-    console: "bg-red-100 text-red-700",
-  };
+  function getPlanColor(tier: string) {
+    switch (tier) {
+      case "pro":
+        return "bg-purple-100 text-purple-700 border-purple-200";
+      case "studio":
+        return "bg-blue-100 text-blue-700 border-blue-200";
+      default:
+        return "bg-green-100 text-green-700 border-green-200";
+    }
+  }
+
+  function formatDuration(seconds: number) {
+    if (seconds < 60) return `${seconds}s`;
+    const mins = Math.floor(seconds / 60);
+    if (mins < 60) return `${mins}m`;
+    const hrs = Math.floor(mins / 60);
+    return `${hrs}h ${mins % 60}m`;
+  }
+
+  const totalGames = games?.length ?? 0;
 
   return (
     <DashboardLayout>
@@ -122,76 +143,84 @@ export default function Dashboard() {
         {/* Welcome Header */}
         <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
           <div>
-            <h1 className="text-2xl md:text-3xl font-bold tracking-tight text-foreground">
-              Welcome back{user?.firstName ? `, ${user.firstName}` : ""}!
+            <h1 className="text-2xl md:text-3xl font-bold text-gray-900">
+              Welcome back{user?.firstName ? `, ${user.firstName}` : ""}! 👋
             </h1>
-            <p className="text-muted-foreground mt-1 text-sm md:text-base">
-              Here's what's happening across your games today.
+            <p className="text-sm md:text-base text-gray-500 mt-1">
+              Monitor your games, analyze player behavior, and improve retention.
             </p>
           </div>
-          <Dialog open={createOpen} onOpenChange={setCreateOpen}>
+          <Dialog open={createGameOpen} onOpenChange={(open) => {
+            setCreateGameOpen(open);
+            if (!open) {
+              setCreateError(null);
+              setGameName("");
+              setGameDescription("");
+              setGamePlatform("");
+            }
+          }}>
             <DialogTrigger asChild>
-              <Button className="h-10 px-4 gap-2 w-full sm:w-auto">
-                <Plus className="w-4 h-4" />
+              <Button className="h-10 px-4 w-full sm:w-auto flex items-center gap-2">
+                <Plus className="h-4 w-4" />
                 Add Game
               </Button>
             </DialogTrigger>
             <DialogContent className="sm:max-w-md">
               <DialogHeader>
-                <DialogTitle>Add a New Game</DialogTitle>
+                <DialogTitle className="text-lg font-semibold">Add New Game</DialogTitle>
               </DialogHeader>
               <div className="space-y-4 pt-2">
-                {formError && (
+                {createError && (
                   <Alert variant="destructive">
-                    <AlertCircle className="h-4 w-4" />
-                    <AlertDescription>{formError}</AlertDescription>
+                    <AlertDescription>{createError}</AlertDescription>
                   </Alert>
                 )}
-                <div className="space-y-2">
-                  <Label htmlFor="game-name">Game Name *</Label>
+                <div className="space-y-1.5">
+                  <Label htmlFor="game-name">Game Name <span className="text-red-500">*</span></Label>
                   <Input
                     id="game-name"
-                    placeholder="e.g. Space Jumper"
+                    placeholder="e.g. Dungeon Crawler X"
                     value={gameName}
                     onChange={(e) => setGameName(e.target.value)}
+                    className="h-10"
                   />
                 </div>
-                <div className="space-y-2">
-                  <Label htmlFor="game-description">Description</Label>
-                  <Textarea
-                    id="game-description"
-                    placeholder="Brief description of your game..."
-                    value={gameDescription}
-                    onChange={(e) => setGameDescription(e.target.value)}
-                    rows={3}
-                  />
-                </div>
-                <div className="space-y-2">
+                <div className="space-y-1.5">
                   <Label htmlFor="game-platform">Platform</Label>
                   <Select value={gamePlatform} onValueChange={setGamePlatform}>
-                    <SelectTrigger id="game-platform">
+                    <SelectTrigger id="game-platform" className="h-10">
                       <SelectValue placeholder="Select platform" />
                     </SelectTrigger>
                     <SelectContent>
-                      <SelectItem value="ios">iOS</SelectItem>
-                      <SelectItem value="android">Android</SelectItem>
-                      <SelectItem value="pc">PC</SelectItem>
-                      <SelectItem value="web">Web</SelectItem>
+                      <SelectItem value="mobile">Mobile (iOS / Android)</SelectItem>
+                      <SelectItem value="pc">PC (Windows / Mac / Linux)</SelectItem>
                       <SelectItem value="console">Console</SelectItem>
+                      <SelectItem value="web">Web / Browser</SelectItem>
+                      <SelectItem value="cross-platform">Cross-Platform</SelectItem>
                     </SelectContent>
                   </Select>
+                </div>
+                <div className="space-y-1.5">
+                  <Label htmlFor="game-description">Description</Label>
+                  <Textarea
+                    id="game-description"
+                    placeholder="A short description of your game..."
+                    value={gameDescription}
+                    onChange={(e) => setGameDescription(e.target.value)}
+                    rows={3}
+                    className="resize-none"
+                  />
                 </div>
                 <div className="flex gap-3 pt-2">
                   <Button
                     variant="outline"
-                    className="flex-1 h-10"
-                    onClick={() => setCreateOpen(false)}
-                    disabled={createGameMutation.isPending}
+                    className="h-10 px-4 flex-1"
+                    onClick={() => setCreateGameOpen(false)}
                   >
                     Cancel
                   </Button>
                   <Button
-                    className="flex-1 h-10"
+                    className="h-10 px-4 flex-1"
                     onClick={handleCreateGame}
                     disabled={createGameMutation.isPending}
                   >
@@ -204,325 +233,352 @@ export default function Dashboard() {
         </div>
 
         {/* Stats Overview */}
-        {statsError ? (
-          <Alert variant="destructive">
-            <AlertCircle className="h-4 w-4" />
-            <AlertDescription>
-              Failed to load stats: {statsError.message}
-            </AlertDescription>
-          </Alert>
-        ) : (
-          <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
-            {statsLoading ? (
-              <>
-                <StatCardSkeleton />
-                <StatCardSkeleton />
-                <StatCardSkeleton />
-                <StatCardSkeleton />
-              </>
-            ) : (
-              <>
-                <Card className="hover:shadow-md transition-shadow">
-                  <CardHeader className="pb-2 flex flex-row items-center justify-between space-y-0">
-                    <CardTitle className="text-xs md:text-sm font-medium text-muted-foreground">
+        <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+          {metricsLoading ? (
+            <>
+              <StatCardSkeleton />
+              <StatCardSkeleton />
+              <StatCardSkeleton />
+              <StatCardSkeleton />
+            </>
+          ) : (
+            <>
+              <Card className="border border-gray-100 shadow-sm hover:shadow-md transition-shadow">
+                <CardHeader className="pb-1 pt-4 px-4">
+                  <div className="flex items-center justify-between">
+                    <CardTitle className="text-xs font-medium text-gray-500 uppercase tracking-wide">
                       Total Games
                     </CardTitle>
-                    <Gamepad2 className="h-4 w-4 text-muted-foreground" />
-                  </CardHeader>
-                  <CardContent>
-                    <div className="text-2xl md:text-3xl font-bold">
-                      {stats?.totalGames ?? 0}
-                    </div>
-                    <p className="text-xs text-muted-foreground mt-1">
-                      {stats?.activeGames ?? 0} active
-                    </p>
-                  </CardContent>
-                </Card>
+                    <Gamepad2 className="h-4 w-4 text-blue-500" />
+                  </div>
+                </CardHeader>
+                <CardContent className="px-4 pb-4">
+                  <p className="text-2xl md:text-3xl font-bold text-gray-900">
+                    {overviewMetrics?.totalGames ?? totalGames}
+                  </p>
+                  <p className="text-xs text-gray-400 mt-0.5">
+                    {overviewMetrics?.activeGames ?? 0} active
+                  </p>
+                </CardContent>
+              </Card>
 
-                <Card className="hover:shadow-md transition-shadow">
-                  <CardHeader className="pb-2 flex flex-row items-center justify-between space-y-0">
-                    <CardTitle className="text-xs md:text-sm font-medium text-muted-foreground">
-                      Total Players
+              <Card className="border border-gray-100 shadow-sm hover:shadow-md transition-shadow">
+                <CardHeader className="pb-1 pt-4 px-4">
+                  <div className="flex items-center justify-between">
+                    <CardTitle className="text-xs font-medium text-gray-500 uppercase tracking-wide">
+                      Total Sessions
                     </CardTitle>
-                    <Users className="h-4 w-4 text-muted-foreground" />
-                  </CardHeader>
-                  <CardContent>
-                    <div className="text-2xl md:text-3xl font-bold">
-                      {stats?.totalPlayers != null
-                        ? stats.totalPlayers.toLocaleString()
-                        : "0"}
-                    </div>
-                    <p className="text-xs text-muted-foreground mt-1">
-                      Across all games
-                    </p>
-                  </CardContent>
-                </Card>
+                    <Activity className="h-4 w-4 text-green-500" />
+                  </div>
+                </CardHeader>
+                <CardContent className="px-4 pb-4">
+                  <p className="text-2xl md:text-3xl font-bold text-gray-900">
+                    {overviewMetrics?.totalSessions?.toLocaleString() ?? "0"}
+                  </p>
+                  <p className="text-xs text-gray-400 mt-0.5">Last 30 days</p>
+                </CardContent>
+              </Card>
 
-                <Card className="hover:shadow-md transition-shadow">
-                  <CardHeader className="pb-2 flex flex-row items-center justify-between space-y-0">
-                    <CardTitle className="text-xs md:text-sm font-medium text-muted-foreground">
-                      Avg. Quit Rate
+              <Card className="border border-gray-100 shadow-sm hover:shadow-md transition-shadow">
+                <CardHeader className="pb-1 pt-4 px-4">
+                  <div className="flex items-center justify-between">
+                    <CardTitle className="text-xs font-medium text-gray-500 uppercase tracking-wide">
+                      Unique Players
                     </CardTitle>
-                    <TrendingDown className="h-4 w-4 text-muted-foreground" />
-                  </CardHeader>
-                  <CardContent>
-                    <div className="text-2xl md:text-3xl font-bold">
-                      {stats?.avgQuitRate != null
-                        ? `${(Number(stats.avgQuitRate) * 100).toFixed(1)}%`
-                        : "—"}
-                    </div>
-                    <p className="text-xs text-muted-foreground mt-1">
-                      Sessions ended early
-                    </p>
-                  </CardContent>
-                </Card>
+                    <Users className="h-4 w-4 text-violet-500" />
+                  </div>
+                </CardHeader>
+                <CardContent className="px-4 pb-4">
+                  <p className="text-2xl md:text-3xl font-bold text-gray-900">
+                    {overviewMetrics?.totalUniquePlayers?.toLocaleString() ?? "0"}
+                  </p>
+                  <p className="text-xs text-gray-400 mt-0.5">Across all games</p>
+                </CardContent>
+              </Card>
 
-                <Card className="hover:shadow-md transition-shadow">
-                  <CardHeader className="pb-2 flex flex-row items-center justify-between space-y-0">
-                    <CardTitle className="text-xs md:text-sm font-medium text-muted-foreground">
-                      Avg. Session
+              <Card className="border border-gray-100 shadow-sm hover:shadow-md transition-shadow">
+                <CardHeader className="pb-1 pt-4 px-4">
+                  <div className="flex items-center justify-between">
+                    <CardTitle className="text-xs font-medium text-gray-500 uppercase tracking-wide">
+                      Avg Drop-off Rate
                     </CardTitle>
-                    <Clock className="h-4 w-4 text-muted-foreground" />
-                  </CardHeader>
-                  <CardContent>
-                    <div className="text-2xl md:text-3xl font-bold">
-                      {stats?.avgSessionDuration != null
-                        ? `${Math.floor(stats.avgSessionDuration / 60)}m`
-                        : "—"}
-                    </div>
-                    <p className="text-xs text-muted-foreground mt-1">
-                      Average play time
-                    </p>
-                  </CardContent>
-                </Card>
-              </>
-            )}
-          </div>
-        )}
+                    <TrendingUp className="h-4 w-4 text-orange-500" />
+                  </div>
+                </CardHeader>
+                <CardContent className="px-4 pb-4">
+                  <p className="text-2xl md:text-3xl font-bold text-gray-900">
+                    {overviewMetrics?.avgDropOffRate != null
+                      ? `${(Number(overviewMetrics.avgDropOffRate) * 100).toFixed(1)}%`
+                      : "—"}
+                  </p>
+                  <p className="text-xs text-gray-400 mt-0.5">All levels</p>
+                </CardContent>
+              </Card>
+            </>
+          )}
+        </div>
 
-        {/* Main Content Grid */}
+        {/* Main Content: Games List + Recent Insights */}
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
           {/* Games List */}
           <div className="lg:col-span-2 space-y-4">
             <div className="flex items-center justify-between">
-              <h2 className="text-lg font-semibold">Your Games</h2>
-              <Button
-                variant="ghost"
-                size="sm"
-                className="text-muted-foreground h-8 px-3 text-xs"
-                onClick={() => setCreateOpen(true)}
-              >
-                <Plus className="w-3 h-3 mr-1" />
-                Add
-              </Button>
+              <h2 className="text-lg font-semibold text-gray-900 flex items-center gap-2">
+                <Gamepad2 className="h-5 w-5 text-blue-500" />
+                Your Games
+              </h2>
+              {!gamesLoading && totalGames > 0 && (
+                <span className="text-sm text-gray-400">{totalGames} game{totalGames !== 1 ? "s" : ""}</span>
+              )}
             </div>
 
-            {gamesError ? (
+            {gamesError && (
               <Alert variant="destructive">
-                <AlertCircle className="h-4 w-4" />
                 <AlertDescription>
-                  Failed to load games: {gamesError.message}
+                  {gamesError.message || "Failed to load games. Please refresh the page."}
                 </AlertDescription>
               </Alert>
-            ) : gamesLoading ? (
-              <div className="space-y-3">
+            )}
+
+            {gamesLoading ? (
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                 <GameCardSkeleton />
                 <GameCardSkeleton />
                 <GameCardSkeleton />
               </div>
-            ) : !games || games.length === 0 ? (
-              <Card className="border-dashed">
-                <CardContent className="flex flex-col items-center justify-center py-12 text-center">
-                  <div className="rounded-full bg-muted p-4 mb-4">
-                    <Gamepad2 className="w-8 h-8 text-muted-foreground" />
+            ) : !gamesError && games && games.length === 0 ? (
+              <Card className="border-2 border-dashed border-gray-200 bg-gray-50/50">
+                <CardContent className="flex flex-col items-center justify-center py-12 text-center px-6">
+                  <div className="rounded-full bg-blue-100 p-4 mb-4">
+                    <Gamepad2 className="h-8 w-8 text-blue-500" />
                   </div>
-                  <h3 className="font-semibold text-lg mb-2">No games yet</h3>
-                  <p className="text-muted-foreground text-sm mb-6 max-w-xs">
-                    Add your first game to start tracking player sessions, quit
-                    patterns, and engagement analytics.
+                  <h3 className="text-base font-semibold text-gray-800 mb-1">No games yet</h3>
+                  <p className="text-sm text-gray-500 mb-6 max-w-xs">
+                    Add your first game to start tracking player sessions, drop-offs, and AI-powered insights.
                   </p>
                   <Button
-                    className="h-10 px-6 gap-2"
-                    onClick={() => setCreateOpen(true)}
+                    className="h-10 px-5 flex items-center gap-2"
+                    onClick={() => setCreateGameOpen(true)}
                   >
-                    <Plus className="w-4 h-4" />
+                    <Plus className="h-4 w-4" />
                     Add Your First Game
                   </Button>
                 </CardContent>
               </Card>
             ) : (
-              <div className="space-y-3">
-                {games.map((game) => (
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                {games?.map((game) => (
                   <Card
                     key={game.id}
-                    className="hover:shadow-md transition-shadow cursor-pointer group"
+                    className="border border-gray-100 shadow-sm hover:shadow-md transition-shadow group"
                   >
-                    <CardHeader className="pb-3">
-                      <div className="flex items-start justify-between gap-3">
-                        <div className="flex-1 min-w-0">
-                          <div className="flex items-center gap-2 flex-wrap">
-                            <CardTitle className="text-base truncate">
-                              {game.name}
-                            </CardTitle>
-                            {game.isActive ? (
-                              <Badge
-                                variant="secondary"
-                                className="bg-green-100 text-green-700 text-xs shrink-0"
-                              >
-                                <Activity className="w-2.5 h-2.5 mr-1" />
-                                Active
-                              </Badge>
-                            ) : (
-                              <Badge variant="outline" className="text-xs shrink-0">
-                                Inactive
-                              </Badge>
-                            )}
-                          </div>
-                          {game.description && (
-                            <CardDescription className="mt-1 text-xs line-clamp-1">
-                              {game.description}
-                            </CardDescription>
-                          )}
+                    <CardHeader className="pb-2 pt-4 px-4">
+                      <div className="flex items-start justify-between gap-2">
+                        <div className="min-w-0">
+                          <CardTitle className="text-sm font-semibold text-gray-900 truncate group-hover:text-blue-600 transition-colors">
+                            {game.name}
+                          </CardTitle>
+                          <CardDescription className="text-xs mt-0.5 truncate">
+                            {game.platform ? game.platform : "No platform set"}
+                          </CardDescription>
                         </div>
-                        <ChevronRight className="w-4 h-4 text-muted-foreground shrink-0 mt-0.5 group-hover:translate-x-0.5 transition-transform" />
+                        <Badge
+                          variant="outline"
+                          className={`text-xs shrink-0 capitalize ${getPlanColor(game.planTier)}`}
+                        >
+                          {game.planTier}
+                        </Badge>
                       </div>
                     </CardHeader>
-                    <CardContent className="pt-0">
-                      <div className="flex items-center gap-2 flex-wrap">
-                        {game.platform && (
-                          <span
-                            className={`text-xs px-2 py-0.5 rounded-full font-medium capitalize ${
-                              platformColors[game.platform] ??
-                              "bg-gray-100 text-gray-700"
+                    <CardContent className="px-4 pb-4 space-y-3">
+                      {game.description && (
+                        <p className="text-xs text-gray-500 line-clamp-2">{game.description}</p>
+                      )}
+                      <div className="flex items-center gap-4 text-xs text-gray-400">
+                        <span className="flex items-center gap-1">
+                          <div
+                            className={`h-2 w-2 rounded-full ${
+                              game.isActive ? "bg-green-400" : "bg-gray-300"
                             }`}
+                          />
+                          {game.isActive ? "Active" : "Inactive"}
+                        </span>
+                        <span className="flex items-center gap-1">
+                          <Clock className="h-3 w-3" />
+                          {game.sessionRetentionDays}d retention
+                        </span>
+                      </div>
+                      <div className="flex gap-2 pt-1">
+                        <Link href={`/dashboard/games/${game.id}`}>
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            className="h-8 px-3 text-xs flex items-center gap-1"
                           >
-                            {game.platform}
-                          </span>
-                        )}
-                        <span className="text-xs text-muted-foreground font-mono truncate max-w-[160px]">
-                          Key: {game.sdkApiKey.slice(0, 12)}…
-                        </span>
-                        <span className="text-xs text-muted-foreground ml-auto">
-                          {new Date(game.createdAt).toLocaleDateString()}
-                        </span>
+                            <BarChart3 className="h-3 w-3" />
+                            Analytics
+                          </Button>
+                        </Link>
+                        <Link href={`/dashboard/games/${game.id}/sessions`}>
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            className="h-8 px-3 text-xs flex items-center gap-1"
+                          >
+                            <Eye className="h-3 w-3" />
+                            Sessions
+                          </Button>
+                        </Link>
+                      </div>
+                    </CardContent>
+                  </Card>
+                ))}
+                {/* Add Game Card */}
+                <Card
+                  className="border-2 border-dashed border-gray-200 bg-gray-50/30 hover:border-blue-300 hover:bg-blue-50/20 transition-colors cursor-pointer group"
+                  onClick={() => setCreateGameOpen(true)}
+                >
+                  <CardContent className="flex flex-col items-center justify-center h-full min-h-[160px] py-8">
+                    <div className="rounded-full bg-gray-100 group-hover:bg-blue-100 p-3 mb-3 transition-colors">
+                      <Plus className="h-5 w-5 text-gray-400 group-hover:text-blue-500 transition-colors" />
+                    </div>
+                    <p className="text-sm font-medium text-gray-500 group-hover:text-blue-600 transition-colors">
+                      Add Game
+                    </p>
+                  </CardContent>
+                </Card>
+              </div>
+            )}
+          </div>
+
+          {/* Recent Insights Panel */}
+          <div className="space-y-4">
+            <h2 className="text-lg font-semibold text-gray-900 flex items-center gap-2">
+              <Brain className="h-5 w-5 text-violet-500" />
+              Recent Insights
+            </h2>
+
+            {insightsLoading ? (
+              <div className="space-y-3">
+                {[1, 2, 3].map((i) => (
+                  <Card key={i} className="border border-gray-100">
+                    <CardContent className="p-4 space-y-2">
+                      <Skeleton className="h-4 w-3/4" />
+                      <Skeleton className="h-3 w-full" />
+                      <Skeleton className="h-3 w-2/3" />
+                    </CardContent>
+                  </Card>
+                ))}
+              </div>
+            ) : recentInsights && recentInsights.length > 0 ? (
+              <div className="space-y-3">
+                {recentInsights.map((insight) => (
+                  <Card
+                    key={insight.id}
+                    className="border border-gray-100 shadow-sm hover:shadow-md transition-shadow"
+                  >
+                    <CardContent className="p-4">
+                      <div className="flex items-start gap-3">
+                        <div className="rounded-md bg-violet-50 p-1.5 shrink-0 mt-0.5">
+                          <Zap className="h-3.5 w-3.5 text-violet-500" />
+                        </div>
+                        <div className="min-w-0 flex-1">
+                          <p className="text-sm font-medium text-gray-800 line-clamp-1">
+                            {insight.title}
+                          </p>
+                          <p className="text-xs text-gray-500 mt-0.5 line-clamp-2">
+                            {insight.summary}
+                          </p>
+                          <div className="flex items-center justify-between mt-2">
+                            <div className="flex items-center gap-2">
+                              {insight.affectedSessionCount > 0 && (
+                                <span className="text-xs text-gray-400 flex items-center gap-1">
+                                  <Users className="h-3 w-3" />
+                                  {insight.affectedSessionCount}
+                                </span>
+                              )}
+                              {insight.status && (
+                                <Badge
+                                  variant="outline"
+                                  className={`text-xs capitalize ${
+                                    insight.status === "ready"
+                                      ? "bg-green-50 text-green-600 border-green-200"
+                                      : insight.status === "processing"
+                                      ? "bg-yellow-50 text-yellow-600 border-yellow-200"
+                                      : insight.status === "failed"
+                                      ? "bg-red-50 text-red-600 border-red-200"
+                                      : "bg-gray-50 text-gray-500 border-gray-200"
+                                  }`}
+                                >
+                                  {insight.status}
+                                </Badge>
+                              )}
+                            </div>
+                            <Link href={`/dashboard/games/${insight.gameId}`}>
+                              <Button
+                                variant="ghost"
+                                size="sm"
+                                className="h-6 w-6 p-0 text-gray-400 hover:text-blue-600"
+                              >
+                                <ChevronRight className="h-4 w-4" />
+                              </Button>
+                            </Link>
+                          </div>
+                        </div>
                       </div>
                     </CardContent>
                   </Card>
                 ))}
               </div>
+            ) : (
+              <Card className="border-2 border-dashed border-gray-200 bg-gray-50/50">
+                <CardContent className="flex flex-col items-center justify-center py-10 text-center px-4">
+                  <div className="rounded-full bg-violet-100 p-3 mb-3">
+                    <Brain className="h-6 w-6 text-violet-400" />
+                  </div>
+                  <p className="text-sm font-medium text-gray-600 mb-1">No insights yet</p>
+                  <p className="text-xs text-gray-400">
+                    Insights will appear once your games collect session data.
+                  </p>
+                </CardContent>
+              </Card>
             )}
-          </div>
 
-          {/* Right Column */}
-          <div className="space-y-4">
-            {/* Recent Insight Reports */}
-            <div>
-              <h2 className="text-lg font-semibold mb-4">Recent Insights</h2>
-              {reportsLoading ? (
-                <div className="space-y-3">
-                  {[0, 1, 2].map((i) => (
-                    <Card key={i}>
-                      <CardContent className="py-4">
-                        <Skeleton className="h-4 w-32 mb-2" />
-                        <Skeleton className="h-3 w-full" />
-                        <Skeleton className="h-3 w-3/4 mt-1" />
-                      </CardContent>
-                    </Card>
-                  ))}
-                </div>
-              ) : !recentReports || recentReports.length === 0 ? (
-                <Card className="border-dashed">
-                  <CardContent className="flex flex-col items-center py-8 text-center">
-                    <BarChart3 className="w-8 h-8 text-muted-foreground mb-3" />
-                    <p className="text-sm text-muted-foreground">
-                      Insight reports will appear once your games start collecting
-                      session data.
-                    </p>
-                  </CardContent>
-                </Card>
-              ) : (
-                <div className="space-y-3">
-                  {recentReports.map((report) => (
-                    <Card
-                      key={report.id}
-                      className="hover:shadow-sm transition-shadow"
-                    >
-                      <CardContent className="py-4">
-                        <div className="flex items-start justify-between gap-2 mb-1">
-                          <span className="text-sm font-medium line-clamp-1 flex-1">
-                            {report.gameName ?? `Game #${report.gameId}`}
-                          </span>
-                          <Badge
-                            variant={report.isPublished ? "default" : "outline"}
-                            className="text-xs shrink-0"
-                          >
-                            {report.isPublished ? "Published" : "Draft"}
-                          </Badge>
-                        </div>
-                        <p className="text-xs text-muted-foreground mb-2">
-                          {new Date(report.reportPeriodStart).toLocaleDateString()} –{" "}
-                          {new Date(report.reportPeriodEnd).toLocaleDateString()}
-                        </p>
-                        <div className="flex items-center gap-3 text-xs text-muted-foreground">
-                          <span className="flex items-center gap-1">
-                            <Users className="w-3 h-3" />
-                            {report.totalSessions} sessions
-                          </span>
-                          <span className="flex items-center gap-1">
-                            <TrendingDown className="w-3 h-3" />
-                            {report.totalQuits} quits
-                          </span>
-                        </div>
-                        {report.llmInsightSummary && (
-                          <p className="text-xs text-muted-foreground mt-2 line-clamp-2 italic">
-                            "{report.llmInsightSummary}"
-                          </p>
-                        )}
-                      </CardContent>
-                    </Card>
-                  ))}
-                </div>
-              )}
-            </div>
-
-            {/* Quick Actions */}
-            <div>
-              <h2 className="text-lg font-semibold mb-4">Quick Actions</h2>
-              <div className="space-y-2">
-                <Button
-                  variant="outline"
-                  className="w-full h-10 justify-start gap-3 text-sm"
-                  onClick={() => setCreateOpen(true)}
-                >
-                  <Plus className="w-4 h-4 text-muted-foreground" />
-                  Add New Game
-                </Button>
-                <Button
-                  variant="outline"
-                  className="w-full h-10 justify-start gap-3 text-sm"
-                  onClick={() => window.location.assign("/dashboard/games")}
-                >
-                  <Eye className="w-4 h-4 text-muted-foreground" />
-                  View All Sessions
-                </Button>
-                <Button
-                  variant="outline"
-                  className="w-full h-10 justify-start gap-3 text-sm"
-                  onClick={() => window.location.assign("/dashboard/settings/api-keys")}
-                >
-                  <Zap className="w-4 h-4 text-muted-foreground" />
-                  Manage API Keys
-                </Button>
-                <Button
-                  variant="outline"
-                  className="w-full h-10 justify-start gap-3 text-sm"
-                  onClick={() => window.location.assign("/dashboard/integrations")}
-                >
-                  <Target className="w-4 h-4 text-muted-foreground" />
-                  SDK Integration Guide
-                </Button>
-              </div>
-            </div>
+            {/* Quick Links */}
+            <Card className="border border-gray-100 bg-gradient-to-br from-blue-50 to-violet-50">
+              <CardContent className="p-4 space-y-2">
+                <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-3">
+                  Quick Actions
+                </p>
+                <Link href="/dashboard/integrations">
+                  <Button
+                    variant="ghost"
+                    className="w-full h-9 justify-start text-sm text-gray-700 hover:text-blue-700 hover:bg-blue-100/60 px-3"
+                  >
+                    <Zap className="h-4 w-4 mr-2 text-blue-500" />
+                    SDK Integrations
+                  </Button>
+                </Link>
+                <Link href="/dashboard/settings/api-keys">
+                  <Button
+                    variant="ghost"
+                    className="w-full h-9 justify-start text-sm text-gray-700 hover:text-violet-700 hover:bg-violet-100/60 px-3"
+                  >
+                    <AlertTriangle className="h-4 w-4 mr-2 text-violet-500" />
+                    API Keys
+                  </Button>
+                </Link>
+                <Link href="/dashboard/settings/billing">
+                  <Button
+                    variant="ghost"
+                    className="w-full h-9 justify-start text-sm text-gray-700 hover:text-green-700 hover:bg-green-100/60 px-3"
+                  >
+                    <TrendingUp className="h-4 w-4 mr-2 text-green-500" />
+                    Billing & Plan
+                  </Button>
+                </Link>
+              </CardContent>
+            </Card>
           </div>
         </div>
       </div>

@@ -1,18 +1,20 @@
 import { drizzle } from "drizzle-orm/node-postgres";
 import { Pool } from "pg";
 import * as schema from "../drizzle/schema";
-import { eq, and, desc, asc, sql } from "drizzle-orm";
+import { eq, and, desc, asc, gte, lte, inArray } from "drizzle-orm";
 import {
+  users,
   subscriptions,
   games,
   gameLevels,
   gameSessions,
   sessionEvents,
-  sessionReplays,
-  dropOffHeatmapEntries,
-  quitInsightReports,
+  dropOffEvents,
+  heatmapSnapshots,
+  insights,
+  insightRecommendations,
   playerProfiles,
-  sdkWebhookLogs,
+  dailyGameMetrics,
   type Subscription,
   type NewSubscription,
   type Game,
@@ -23,16 +25,18 @@ import {
   type NewGameSession,
   type SessionEvent,
   type NewSessionEvent,
-  type SessionReplay,
-  type NewSessionReplay,
-  type DropOffHeatmapEntry,
-  type NewDropOffHeatmapEntry,
-  type QuitInsightReport,
-  type NewQuitInsightReport,
+  type DropOffEvent,
+  type NewDropOffEvent,
+  type HeatmapSnapshot,
+  type NewHeatmapSnapshot,
+  type Insight,
+  type NewInsight,
+  type InsightRecommendation,
+  type NewInsightRecommendation,
   type PlayerProfile,
   type NewPlayerProfile,
-  type SdkWebhookLog,
-  type NewSdkWebhookLog,
+  type DailyGameMetric,
+  type NewDailyGameMetric,
 } from "../drizzle/schema";
 
 let db: ReturnType<typeof drizzle> | null = null;
@@ -45,41 +49,31 @@ export async function getDb() {
   return db;
 }
 
-export async function upsertUser(clerkId: string, email: string, name: string) {
+export async function upsertUser(openId: string, email: string, name: string, imageUrl?: string) {
   const db = await getDb();
-  const existing = await db
-    .select()
-    .from(schema.users)
-    .where(eq(schema.users.clerkId, clerkId))
-    .limit(1);
-
+  const existing = await db.select().from(users).where(eq(users.openId, openId)).limit(1);
   if (existing.length > 0) {
     const updated = await db
-      .update(schema.users)
-      .set({ email, name, updatedAt: new Date() })
-      .where(eq(schema.users.clerkId, clerkId))
+      .update(users)
+      .set({ email, name, imageUrl, updatedAt: new Date() })
+      .where(eq(users.openId, openId))
       .returning();
     return updated[0];
   }
-
-  const inserted = await db
-    .insert(schema.users)
-    .values({ clerkId, email, name })
+  const created = await db
+    .insert(users)
+    .values({ openId, email, name, imageUrl })
     .returning();
-  return inserted[0];
+  return created[0];
 }
 
-export async function getUserByOpenId(clerkId: string) {
+export async function getUserByOpenId(openId: string) {
   const db = await getDb();
-  const result = await db
-    .select()
-    .from(schema.users)
-    .where(eq(schema.users.clerkId, clerkId))
-    .limit(1);
+  const result = await db.select().from(users).where(eq(users.openId, openId)).limit(1);
   return result[0] ?? null;
 }
 
-// ─── Subscription Helpers ────────────────────────────────────────────────────
+// ─── Subscriptions ────────────────────────────────────────────────────────────
 
 export async function getSubscriptionByUserId(userId: number): Promise<Subscription | null> {
   const db = await getDb();
@@ -87,6 +81,7 @@ export async function getSubscriptionByUserId(userId: number): Promise<Subscript
     .select()
     .from(subscriptions)
     .where(eq(subscriptions.userId, userId))
+    .orderBy(desc(subscriptions.createdAt))
     .limit(1);
   return result[0] ?? null;
 }
@@ -132,7 +127,7 @@ export async function updateSubscription(
 
 export async function upsertSubscriptionByUserId(
   userId: number,
-  data: Omit<NewSubscription, "userId">
+  data: Partial<NewSubscription>
 ): Promise<Subscription> {
   const db = await getDb();
   const existing = await getSubscriptionByUserId(userId);
@@ -144,51 +139,39 @@ export async function upsertSubscriptionByUserId(
       .returning();
     return updated[0];
   }
-  const inserted = await db
+  const created = await db
     .insert(subscriptions)
-    .values({ userId, ...data })
+    .values({ userId, ...data } as NewSubscription)
     .returning();
-  return inserted[0];
+  return created[0];
 }
 
-// ─── Game Helpers ────────────────────────────────────────────────────────────
+// ─── Games ────────────────────────────────────────────────────────────────────
 
 export async function getGamesByUserId(userId: number): Promise<Game[]> {
   const db = await getDb();
   return db
     .select()
     .from(games)
-    .where(eq(games.userId, userId))
+    .where(and(eq(games.userId, userId), eq(games.isActive, true)))
     .orderBy(desc(games.createdAt));
 }
 
-export async function getGameById(gameId: number): Promise<Game | null> {
+export async function getGameById(id: number): Promise<Game | null> {
   const db = await getDb();
-  const result = await db
-    .select()
-    .from(games)
-    .where(eq(games.id, gameId))
-    .limit(1);
+  const result = await db.select().from(games).where(eq(games.id, id)).limit(1);
   return result[0] ?? null;
 }
 
 export async function getGameBySlug(slug: string): Promise<Game | null> {
   const db = await getDb();
-  const result = await db
-    .select()
-    .from(games)
-    .where(eq(games.slug, slug))
-    .limit(1);
+  const result = await db.select().from(games).where(eq(games.slug, slug)).limit(1);
   return result[0] ?? null;
 }
 
 export async function getGameBySdkApiKey(sdkApiKey: string): Promise<Game | null> {
   const db = await getDb();
-  const result = await db
-    .select()
-    .from(games)
-    .where(eq(games.sdkApiKey, sdkApiKey))
-    .limit(1);
+  const result = await db.select().from(games).where(eq(games.sdkApiKey, sdkApiKey)).limit(1);
   return result[0] ?? null;
 }
 
@@ -199,43 +182,39 @@ export async function createGame(data: NewGame): Promise<Game> {
 }
 
 export async function updateGame(
-  gameId: number,
-  userId: number,
-  data: Partial<Omit<Game, "id" | "userId" | "createdAt">>
+  id: number,
+  data: Partial<Omit<Game, "id" | "createdAt">>
 ): Promise<Game | null> {
   const db = await getDb();
   const result = await db
     .update(games)
     .set({ ...data, updatedAt: new Date() })
-    .where(and(eq(games.id, gameId), eq(games.userId, userId)))
+    .where(eq(games.id, id))
     .returning();
   return result[0] ?? null;
 }
 
-export async function deleteGame(gameId: number, userId: number): Promise<boolean> {
-  const db = await getDb();
-  const result = await db
-    .delete(games)
-    .where(and(eq(games.id, gameId), eq(games.userId, userId)))
-    .returning();
-  return result.length > 0;
-}
-
-export async function setGameActiveStatus(
-  gameId: number,
-  userId: number,
-  isActive: boolean
-): Promise<Game | null> {
+export async function softDeleteGame(id: number): Promise<Game | null> {
   const db = await getDb();
   const result = await db
     .update(games)
-    .set({ isActive, updatedAt: new Date() })
-    .where(and(eq(games.id, gameId), eq(games.userId, userId)))
+    .set({ isActive: false, updatedAt: new Date() })
+    .where(eq(games.id, id))
     .returning();
   return result[0] ?? null;
 }
 
-// ─── Game Level Helpers ──────────────────────────────────────────────────────
+export async function getGameWithOwnerCheck(gameId: number, userId: number): Promise<Game | null> {
+  const db = await getDb();
+  const result = await db
+    .select()
+    .from(games)
+    .where(and(eq(games.id, gameId), eq(games.userId, userId), eq(games.isActive, true)))
+    .limit(1);
+  return result[0] ?? null;
+}
+
+// ─── Game Levels ──────────────────────────────────────────────────────────────
 
 export async function getLevelsByGameId(gameId: number): Promise<GameLevel[]> {
   const db = await getDb();
@@ -243,15 +222,21 @@ export async function getLevelsByGameId(gameId: number): Promise<GameLevel[]> {
     .select()
     .from(gameLevels)
     .where(eq(gameLevels.gameId, gameId))
-    .orderBy(asc(gameLevels.levelIndex));
+    .orderBy(asc(gameLevels.ordinalPosition));
 }
 
-export async function getLevelById(levelId: number): Promise<GameLevel | null> {
+export async function getLevelById(id: number): Promise<GameLevel | null> {
+  const db = await getDb();
+  const result = await db.select().from(gameLevels).where(eq(gameLevels.id, id)).limit(1);
+  return result[0] ?? null;
+}
+
+export async function getLevelByKey(gameId: number, levelKey: string): Promise<GameLevel | null> {
   const db = await getDb();
   const result = await db
     .select()
     .from(gameLevels)
-    .where(eq(gameLevels.id, levelId))
+    .where(and(eq(gameLevels.gameId, gameId), eq(gameLevels.levelKey, levelKey)))
     .limit(1);
   return result[0] ?? null;
 }
@@ -263,40 +248,42 @@ export async function createGameLevel(data: NewGameLevel): Promise<GameLevel> {
 }
 
 export async function updateGameLevel(
-  levelId: number,
-  gameId: number,
-  data: Partial<Omit<GameLevel, "id" | "gameId" | "createdAt">>
+  id: number,
+  data: Partial<Omit<GameLevel, "id" | "createdAt">>
 ): Promise<GameLevel | null> {
   const db = await getDb();
   const result = await db
     .update(gameLevels)
     .set(data)
-    .where(and(eq(gameLevels.id, levelId), eq(gameLevels.gameId, gameId)))
+    .where(eq(gameLevels.id, id))
     .returning();
   return result[0] ?? null;
 }
 
-export async function deleteGameLevel(levelId: number, gameId: number): Promise<boolean> {
+export async function deleteGameLevel(id: number): Promise<void> {
   const db = await getDb();
-  const result = await db
-    .delete(gameLevels)
-    .where(and(eq(gameLevels.id, levelId), eq(gameLevels.gameId, gameId)))
-    .returning();
-  return result.length > 0;
+  await db.delete(gameLevels).where(eq(gameLevels.id, id));
 }
 
-export async function upsertGameLevels(gameId: number, levels: Omit<NewGameLevel, "gameId">[]): Promise<GameLevel[]> {
+export async function upsertGameLevel(gameId: number, levelKey: string, data: Omit<NewGameLevel, "gameId" | "levelKey">): Promise<GameLevel> {
   const db = await getDb();
-  await db.delete(gameLevels).where(eq(gameLevels.gameId, gameId));
-  if (levels.length === 0) return [];
-  const result = await db
+  const existing = await getLevelByKey(gameId, levelKey);
+  if (existing) {
+    const updated = await db
+      .update(gameLevels)
+      .set(data)
+      .where(eq(gameLevels.id, existing.id))
+      .returning();
+    return updated[0];
+  }
+  const created = await db
     .insert(gameLevels)
-    .values(levels.map((l) => ({ ...l, gameId })))
+    .values({ gameId, levelKey, ...data })
     .returning();
-  return result;
+  return created[0];
 }
 
-// ─── Game Session Helpers ────────────────────────────────────────────────────
+// ─── Game Sessions ────────────────────────────────────────────────────────────
 
 export async function getSessionsByGameId(
   gameId: number,
@@ -308,24 +295,30 @@ export async function getSessionsByGameId(
     .select()
     .from(gameSessions)
     .where(eq(gameSessions.gameId, gameId))
-    .orderBy(desc(gameSessions.sessionStartedAt))
+    .orderBy(desc(gameSessions.startedAt))
     .limit(limit)
     .offset(offset);
 }
 
-export async function getSessionById(sessionId: number): Promise<GameSession | null> {
+export async function getSessionById(id: number): Promise<GameSession | null> {
+  const db = await getDb();
+  const result = await db.select().from(gameSessions).where(eq(gameSessions.id, id)).limit(1);
+  return result[0] ?? null;
+}
+
+export async function getSessionByToken(sessionToken: string): Promise<GameSession | null> {
   const db = await getDb();
   const result = await db
     .select()
     .from(gameSessions)
-    .where(eq(gameSessions.id, sessionId))
+    .where(eq(gameSessions.sessionToken, sessionToken))
     .limit(1);
   return result[0] ?? null;
 }
 
-export async function getSessionsByPlayerIdentifier(
+export async function getSessionsByPlayerId(
   gameId: number,
-  playerIdentifier: string
+  externalPlayerId: string
 ): Promise<GameSession[]> {
   const db = await getDb();
   return db
@@ -334,10 +327,10 @@ export async function getSessionsByPlayerIdentifier(
     .where(
       and(
         eq(gameSessions.gameId, gameId),
-        eq(gameSessions.playerIdentifier, playerIdentifier)
+        eq(gameSessions.externalPlayerId, externalPlayerId)
       )
     )
-    .orderBy(desc(gameSessions.sessionStartedAt));
+    .orderBy(desc(gameSessions.startedAt));
 }
 
 export async function createGameSession(data: NewGameSession): Promise<GameSession> {
@@ -347,64 +340,63 @@ export async function createGameSession(data: NewGameSession): Promise<GameSessi
 }
 
 export async function updateGameSession(
-  sessionId: number,
+  id: number,
   data: Partial<Omit<GameSession, "id" | "createdAt">>
 ): Promise<GameSession | null> {
   const db = await getDb();
   const result = await db
     .update(gameSessions)
     .set(data)
-    .where(eq(gameSessions.id, sessionId))
+    .where(eq(gameSessions.id, id))
     .returning();
   return result[0] ?? null;
 }
 
 export async function endGameSession(
-  sessionId: number,
-  sessionEndedAt: Date,
+  id: number,
+  status: "completed" | "quit" | "crashed" | "timeout",
+  endedAt: Date,
   durationSeconds: number,
-  status: "completed" | "quit" | "crashed" | "idle_timeout",
-  quitReason?: "manual_quit" | "idle_timeout" | "crash" | "level_frustration" | "repeated_failure" | "unknown",
-  quitLevelId?: number
+  quitReason?: string
 ): Promise<GameSession | null> {
   const db = await getDb();
   const result = await db
     .update(gameSessions)
-    .set({
-      sessionEndedAt,
-      durationSeconds,
-      status,
-      quitReason: quitReason ?? null,
-      quitLevelId: quitLevelId ?? null,
-    })
-    .where(eq(gameSessions.id, sessionId))
+    .set({ status, endedAt, durationSeconds, quitReason })
+    .where(eq(gameSessions.id, id))
     .returning();
   return result[0] ?? null;
 }
 
-export async function updateSessionLlmSummary(
-  sessionId: number,
-  llmQuitSummary: string
-): Promise<GameSession | null> {
-  const db = await getDb();
-  const result = await db
-    .update(gameSessions)
-    .set({ llmQuitSummary })
-    .where(eq(gameSessions.id, sessionId))
-    .returning();
-  return result[0] ?? null;
-}
-
-export async function getActiveSessionsForGame(gameId: number): Promise<GameSession[]> {
+export async function getActiveSessionsByGameId(gameId: number): Promise<GameSession[]> {
   const db = await getDb();
   return db
     .select()
     .from(gameSessions)
     .where(and(eq(gameSessions.gameId, gameId), eq(gameSessions.status, "active")))
-    .orderBy(desc(gameSessions.sessionStartedAt));
+    .orderBy(desc(gameSessions.startedAt));
 }
 
-// ─── Session Event Helpers ───────────────────────────────────────────────────
+export async function getSessionsByDateRange(
+  gameId: number,
+  from: Date,
+  to: Date
+): Promise<GameSession[]> {
+  const db = await getDb();
+  return db
+    .select()
+    .from(gameSessions)
+    .where(
+      and(
+        eq(gameSessions.gameId, gameId),
+        gte(gameSessions.startedAt, from),
+        lte(gameSessions.startedAt, to)
+      )
+    )
+    .orderBy(desc(gameSessions.startedAt));
+}
+
+// ─── Session Events ───────────────────────────────────────────────────────────
 
 export async function getEventsBySessionId(sessionId: number): Promise<SessionEvent[]> {
   const db = await getDb();
@@ -412,7 +404,7 @@ export async function getEventsBySessionId(sessionId: number): Promise<SessionEv
     .select()
     .from(sessionEvents)
     .where(eq(sessionEvents.sessionId, sessionId))
-    .orderBy(asc(sessionEvents.sequenceIndex));
+    .orderBy(asc(sessionEvents.sessionOffsetMs));
 }
 
 export async function getEventsByGameId(
@@ -431,17 +423,17 @@ export async function getEventsByGameId(
 }
 
 export async function getEventsByLevelId(
-  levelId: number,
-  gameId: number
+  gameId: number,
+  levelId: number
 ): Promise<SessionEvent[]> {
   const db = await getDb();
   return db
     .select()
     .from(sessionEvents)
     .where(
-      and(eq(sessionEvents.levelId, levelId), eq(sessionEvents.gameId, gameId))
+      and(eq(sessionEvents.gameId, gameId), eq(sessionEvents.levelId, levelId))
     )
-    .orderBy(asc(sessionEvents.sequenceIndex));
+    .orderBy(desc(sessionEvents.occurredAt));
 }
 
 export async function createSessionEvent(data: NewSessionEvent): Promise<SessionEvent> {
@@ -453,105 +445,104 @@ export async function createSessionEvent(data: NewSessionEvent): Promise<Session
 export async function bulkCreateSessionEvents(data: NewSessionEvent[]): Promise<SessionEvent[]> {
   if (data.length === 0) return [];
   const db = await getDb();
-  const result = await db.insert(sessionEvents).values(data).returning();
-  return result;
+  return db.insert(sessionEvents).values(data).returning();
 }
 
-export async function getEventsByTypeForSession(
-  sessionId: number,
-  eventType: string
-): Promise<SessionEvent[]> {
+export async function getDeathEventsBySessionId(sessionId: number): Promise<SessionEvent[]> {
   const db = await getDb();
   return db
     .select()
     .from(sessionEvents)
     .where(
-      and(
-        eq(sessionEvents.sessionId, sessionId),
-        eq(sessionEvents.eventType, eventType)
-      )
+      and(eq(sessionEvents.sessionId, sessionId), eq(sessionEvents.eventType, "death"))
     )
-    .orderBy(asc(sessionEvents.sequenceIndex));
+    .orderBy(asc(sessionEvents.sessionOffsetMs));
 }
 
-// ─── Session Replay Helpers ──────────────────────────────────────────────────
+// ─── Drop Off Events ──────────────────────────────────────────────────────────
 
-export async function getReplayBySessionId(sessionId: number): Promise<SessionReplay | null> {
-  const db = await getDb();
-  const result = await db
-    .select()
-    .from(sessionReplays)
-    .where(eq(sessionReplays.sessionId, sessionId))
-    .limit(1);
-  return result[0] ?? null;
-}
-
-export async function getReplaysByGameId(
+export async function getDropOffEventsByGameId(
   gameId: number,
-  limit = 50,
+  limit = 100,
   offset = 0
-): Promise<SessionReplay[]> {
+): Promise<DropOffEvent[]> {
   const db = await getDb();
   return db
     .select()
-    .from(sessionReplays)
-    .where(eq(sessionReplays.gameId, gameId))
-    .orderBy(desc(sessionReplays.createdAt))
+    .from(dropOffEvents)
+    .where(eq(dropOffEvents.gameId, gameId))
+    .orderBy(desc(dropOffEvents.occurredAt))
     .limit(limit)
     .offset(offset);
 }
 
-export async function createSessionReplay(data: NewSessionReplay): Promise<SessionReplay> {
+export async function getDropOffEventsByLevelId(
+  gameId: number,
+  levelId: number
+): Promise<DropOffEvent[]> {
   const db = await getDb();
-  const result = await db.insert(sessionReplays).values(data).returning();
+  return db
+    .select()
+    .from(dropOffEvents)
+    .where(
+      and(eq(dropOffEvents.gameId, gameId), eq(dropOffEvents.levelId, levelId))
+    )
+    .orderBy(desc(dropOffEvents.occurredAt));
+}
+
+export async function getDropOffEventsBySessionId(sessionId: number): Promise<DropOffEvent[]> {
+  const db = await getDb();
+  return db
+    .select()
+    .from(dropOffEvents)
+    .where(eq(dropOffEvents.sessionId, sessionId))
+    .orderBy(desc(dropOffEvents.occurredAt));
+}
+
+export async function createDropOffEvent(data: NewDropOffEvent): Promise<DropOffEvent> {
+  const db = await getDb();
+  const result = await db.insert(dropOffEvents).values(data).returning();
   return result[0];
 }
 
-export async function markReplayAsProcessed(replayId: number): Promise<SessionReplay | null> {
+export async function updateDropOffEvent(
+  id: number,
+  data: Partial<Omit<DropOffEvent, "id" | "createdAt">>
+): Promise<DropOffEvent | null> {
   const db = await getDb();
   const result = await db
-    .update(sessionReplays)
-    .set({ isProcessed: true })
-    .where(eq(sessionReplays.id, replayId))
-    .returning();
-  return result[0] ?? null;
-}
-
-export async function updateSessionReplay(
-  replayId: number,
-  data: Partial<Omit<SessionReplay, "id" | "createdAt">>
-): Promise<SessionReplay | null> {
-  const db = await getDb();
-  const result = await db
-    .update(sessionReplays)
+    .update(dropOffEvents)
     .set(data)
-    .where(eq(sessionReplays.id, replayId))
+    .where(eq(dropOffEvents.id, id))
     .returning();
   return result[0] ?? null;
 }
 
-export async function getUnprocessedReplays(limit = 20): Promise<SessionReplay[]> {
+export async function getUnanalyzedDropOffEvents(
+  gameId: number,
+  limit = 50
+): Promise<DropOffEvent[]> {
   const db = await getDb();
   return db
     .select()
-    .from(sessionReplays)
-    .where(eq(sessionReplays.isProcessed, false))
-    .orderBy(asc(sessionReplays.createdAt))
+    .from(dropOffEvents)
+    .where(
+      and(eq(dropOffEvents.gameId, gameId), eq(dropOffEvents.llmAnalyzed, false))
+    )
+    .orderBy(asc(dropOffEvents.occurredAt))
     .limit(limit);
 }
 
-// ─── Drop-Off Heatmap Entry Helpers ─────────────────────────────────────────
-
-export async function getHeatmapEntriesByGameAndLevel(
+export async function getDropOffEventsByDateRange(
   gameId: number,
-  levelId: number
-): Promise<DropOffHeatmapEntry[]> {
+  from: Date,
+  to: Date
+): Promise<DropOffEvent[]> {
   const db = await getDb();
   return db
     .select()
-    .from(dropOffHeatmapEntries)
+    .from(dropOffEvents)
     .where(
       and(
-        eq(dropOffHeatmapEntries.gameId, gameId),
-        eq(dropOffHeatmapEntries.levelId, levelId)
-      )
+        eq(dropOffEvents.gameId, gameId),
+        gte(dropOff
